@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <unordered_map>
 #include "MinHook.h"
 
 namespace Retail {
@@ -21,6 +22,8 @@ namespace Retail {
     constexpr uintptr_t ADDR_CPLAYERGUI_DRAWPREPARE        = 0x00439070;
     constexpr uintptr_t ADDR_CSUBTITLERENDERER_DRAWPREPARE = 0x00490494;
     constexpr uintptr_t ADDR_CDRAWRECEIVEDITEMS_DRAW       = 0x0064E978;
+    constexpr uintptr_t ADDR_CTCHERORECEIVEITEMS_PREPARE   = 0x007CA670;
+    constexpr uintptr_t ADDR_CTCHERORECEIVEITEMS_GLOBALUPD = 0x007CACB0;
     constexpr uintptr_t ADDR_CDRAWBETTINGHUD_DRAW          = 0x00649952;
     constexpr uintptr_t ADDR_CDRAW2DTEXT_DRAW              = 0x006541D1;
 
@@ -38,8 +41,14 @@ namespace Retail {
     constexpr uintptr_t ADDR_PRIM_2DSTATICMESH_UPDATE      = 0x00B9DFC0;
     constexpr uintptr_t ADDR_PRIM_2DANIMMESH_UPDATE        = 0x00BD2BC0; // Also called by 2DMorphedAnimatedMesh::Update
 
-    // HUD 2D Particles
-    constexpr uintptr_t ADDR_CPARTICLEEMITTER_SET2DPOS     = 0x00AED090;
+    // HUD & UI 2D Particles
+    constexpr uintptr_t ADDR_CPARTICLEEMITTER_SET2DPOS       = 0x00AED090;
+    constexpr uintptr_t ADDR_CPARTICLEEMITTER_PREPPARAMS     = 0x00AEE560; // CParticleEmitter::PreparePrimitives
+    constexpr uintptr_t ADDR_CPARTICLEEMITTER_DTOR           = 0x00AF10E0; // CParticleEmitter::~CParticleEmitter
+    constexpr uintptr_t ADDR_PRIM_2DPARTICLEGROUP_UPDATE     = 0x00BE0DE0; // CEngineInternalPrimitive2DParticleGroup::Update
+    constexpr uintptr_t ADDR_UIPARTICLEEFFECT_INITIALISE     = 0x00543D30; // NUISystem::CParticleEffect::Initialise
+    constexpr uintptr_t ADDR_UIPARTICLEEFFECT_CHANGESTATE    = 0x00543DF0; // NUISystem::CParticleEffect::ChangeState
+    constexpr uintptr_t ADDR_UIPARTICLEEFFECT_DRAW           = 0x00543EE0; // NUISystem::CParticleEffect::Draw
 
     // RenderManager Viewport & 2D QuickDraw (Subtitles, Region Preview, Loading / Transition Progress)
     constexpr uintptr_t ADDR_CRENDERMANAGERCORE_SETVWINDOW = 0x00A0B560;
@@ -175,6 +184,9 @@ static void InitIniPath(HMODULE hMod) {
     wcsncat_s(g_IniPath, L".ini", _TRUNCATE);
 }
 
+// ============================================================================
+// Typedefs & Original Pointers
+// ============================================================================
 using GetBackBufferDim_t = double(__cdecl*)();
 using GetUIScale_t       = C2DVector* (__fastcall*)(void* _this, void* edx, C2DVector* outResult);
 using IsHovered_t        = bool(__fastcall*)(void* _this, void* edx, const C2DBoxI* mousePos);
@@ -184,6 +196,8 @@ using GetRenderTargetDimensions_t = C2DExtentsI* (__fastcall*)(void* _this, void
 using VoidPrep_t         = void* (__fastcall*)(void* _this, void* edx, const void* info);
 using CharPrep_t         = char(__fastcall*)(void* _this, void* edx, const void* info);
 using IntPrep_t          = int(__fastcall*)(void* _this, void* edx, const void* info);
+using ReceiveItemsPrepare_t = void(__fastcall*)(void* _this, void* edx, const void* pos);
+using ReceiveItemsUpdate_t  = char(__fastcall*)(void* _this, void* edx, bool paused);
 
 using TavernDrawBetAndMoney_t = void(__fastcall*)(void* _this, void* edx, void* info, float a, float b, float c, float d, float e, float f);
 using TavernDrawTextLabel_t   = void(__fastcall*)(void* _this, void* edx, float a2, float a3, float a4, int a5, void* a6, int a7);
@@ -193,7 +207,13 @@ using PrimUpdateChar_t   = char(__fastcall*)(void* _this, void* edx, const void*
 using PrimUpdateUint_t   = uint32_t(__fastcall*)(void* _this, void* edx, const void* src, uint32_t flags);
 using PrimUpdateInt_t    = int(__fastcall*)(void* _this, void* edx, const void* src, uint32_t flags);
 using PrimUpdateAnim_t   = int(__fastcall*)(void* _this, void* edx, const void* src, char flags);
+using PrimUpdate2DPart_t = int(__fastcall*)(void* _this, void* edx, const void* src, uint32_t flags);
 using Set2DPosition_t    = int(__fastcall*)(void* _this, void* edx, const C2DVector* pos, int layer);
+using EmitterPrepare_t   = char(__fastcall*)(void* _this, void* edx, float interpolate, const void* info);
+using EmitterDtor_t      = void(__fastcall*)(void* _this, void* edx);
+using UIPartInit_t       = int(__fastcall*)(void* _this, void* edx);
+using UIPartState_t      = int(__fastcall*)(void* _this, void* edx, uint32_t state);
+using UIPartDraw_t       = int(__fastcall*)(void* _this, void* edx, int a2, int a3, int a4, int a5, int a6);
 
 using SetVWindow_t        = void(__fastcall*)(void* _this, void* edx, const C2DBoxF* twindow);
 using RegionGlobalDraw_t  = char(__fastcall*)(void* _this, void* edx, int interp);
@@ -208,6 +228,8 @@ static GetRenderTargetDimensions_t o_GetRTDims = nullptr;
 static VoidPrep_t                  o_PlayerGuiDrawPrepare = nullptr;
 static CharPrep_t                  o_SubtitleDrawPrepare = nullptr;
 static CharPrep_t                  o_ReceivedItemsDraw = nullptr;
+static ReceiveItemsPrepare_t       o_HeroReceiveItemsPrepareToShow = nullptr;
+static ReceiveItemsUpdate_t        o_HeroReceiveItemsGlobalUpdate = nullptr;
 static IntPrep_t                   o_BettingHUDDraw = nullptr;
 static VoidPrep_t                  o_Draw2DTextFlush = nullptr;
 
@@ -223,7 +245,13 @@ static PrimUpdateUint_t            o_2DClockSpriteUpdate = nullptr;
 static PrimUpdateInt_t             o_2DTextUpdate = nullptr;
 static PrimUpdateInt_t             o_2DStaticMeshUpdate = nullptr;
 static PrimUpdateAnim_t            o_2DAnimMeshUpdate = nullptr;
+static PrimUpdate2DPart_t          o_2DParticleGroupUpdate = nullptr;
 static Set2DPosition_t             o_Set2DPosition = nullptr;
+static EmitterPrepare_t            o_ParticleEmitterPreparePrimitives = nullptr;
+static EmitterDtor_t               o_ParticleEmitterDtor = nullptr;
+static UIPartInit_t                o_UIParticleEffectInitialise = nullptr;
+static UIPartState_t               o_UIParticleEffectChangeState = nullptr;
+static UIPartDraw_t                o_UIParticleEffectDraw = nullptr;
 
 static SetVWindow_t                o_SetVWindow = nullptr;
 static RegionGlobalDraw_t          o_RegionGlobalDraw = nullptr;
@@ -231,12 +259,54 @@ static DrawRetailDisplay_t         o_DrawRetailDisplay = nullptr;
 static AddText_t                   o_AddText = nullptr;
 static Add2DTri_t                  o_Add2DTri = nullptr;
 
+// ============================================================================
+// Thread-local HUD Virtual Canvas State
+// ============================================================================
 thread_local int   tl_hudScopeDepth   = 0;
 thread_local int   tl_hudExcludeDepth = 0;
 thread_local int   tl_virtualW        = 1280;
 thread_local int   tl_virtualH        = 720;
-thread_local float tl_hudScaleX       = 1.0f;
-thread_local float tl_hudScaleY       = 1.0f;
+thread_local float tl_hudScaleX             = 1.0f;
+thread_local float tl_hudScaleY             = 1.0f;
+thread_local int   tl_uiParticleScopeDepth  = 0;
+thread_local float tl_pending2DParticleScale = 1.0f;
+
+enum class ParticleScaleMode : uint8_t {
+    None = 0,
+    Hud  = 1,
+    Menu = 2,
+};
+
+static SRWLOCK g_EmitterScaleLock = SRWLOCK_INIT;
+static std::unordered_map<const void*, ParticleScaleMode> g_EmitterScaleModes;
+
+static void SetParticleEmitterScaleMode(const void* emitter, ParticleScaleMode mode) {
+    if (!emitter || mode == ParticleScaleMode::None) return;
+    AcquireSRWLockExclusive(&g_EmitterScaleLock);
+    g_EmitterScaleModes[emitter] = mode;
+    ReleaseSRWLockExclusive(&g_EmitterScaleLock);
+}
+
+static ParticleScaleMode GetParticleEmitterScaleMode(const void* emitter) {
+    if (!emitter) return ParticleScaleMode::None;
+    AcquireSRWLockShared(&g_EmitterScaleLock);
+    auto it = g_EmitterScaleModes.find(emitter);
+    ParticleScaleMode mode = (it != g_EmitterScaleModes.end()) ? it->second : ParticleScaleMode::None;
+    ReleaseSRWLockShared(&g_EmitterScaleLock);
+    return mode;
+}
+
+static void RemoveParticleEmitterScaleMode(const void* emitter) {
+    if (!emitter) return;
+    AcquireSRWLockExclusive(&g_EmitterScaleLock);
+    g_EmitterScaleModes.erase(emitter);
+    ReleaseSRWLockExclusive(&g_EmitterScaleLock);
+}
+
+struct UIParticleScopeGuard {
+    UIParticleScopeGuard()  { ++tl_uiParticleScopeDepth; }
+    ~UIParticleScopeGuard() { --tl_uiParticleScopeDepth; }
+};
 
 inline bool IsHudScalingActive() {
     return tl_hudScopeDepth > 0 && tl_hudExcludeDepth == 0;
@@ -286,14 +356,15 @@ struct HudExcludeGuard {
     ~HudExcludeGuard() { --tl_hudExcludeDepth; }
 };
 
-static C2DVector* __fastcall hk_GetUIScale(void* /*_this*/, void* /*edx*/, C2DVector* outResult) {
+// ============================================================================
+// Part 1: NUISystem Hooks (Menus, Inventory, Pause, Map, Front-End, Cursor)
+// ============================================================================
+static float ComputeMenuUIScale() {
     LoadConfigFromIni(false);
 
     void* mainGame = *reinterpret_cast<void* volatile*>(Rebase(Retail::ADDR_PMAINGAMECOMPONENT));
     if (!g_Config.ScaleMainMenu && mainGame == nullptr) {
-        outResult->X = 1.0f;
-        outResult->Y = 1.0f;
-        return outResult;
+        return 1.0f;
     }
 
     auto fnW = reinterpret_cast<GetBackBufferDim_t>(Rebase(Retail::ADDR_NUISYSTEM_GETBACKBUFFERWIDTH));
@@ -313,7 +384,11 @@ static C2DVector* __fastcall hk_GetUIScale(void* /*_this*/, void* /*edx*/, C2DVe
         }
     }
 
-    float finalScale = ClampScale(baseScale * g_Config.UIScaleMultiplier * g_Config.MenuScaleMultiplier);
+    return ClampScale(baseScale * g_Config.UIScaleMultiplier * g_Config.MenuScaleMultiplier);
+}
+
+static C2DVector* __fastcall hk_GetUIScale(void* /*_this*/, void* /*edx*/, C2DVector* outResult) {
+    float finalScale = ComputeMenuUIScale();
     outResult->X = finalScale;
     outResult->Y = finalScale;
     return outResult;
@@ -348,6 +423,9 @@ static bool __fastcall hk_CHoverable_IsHovered(void* _this, void* /*edx*/, const
            mousePos->TLY >= tlY && mousePos->TLY < brY;
 }
 
+// ============================================================================
+// Part 2: Virtual HUD Canvas + Native-Resolution Primitive Rescaling
+// ============================================================================
 static C2DExtentsI* __fastcall hk_GetRenderTargetDimensions(void* _this, void* edx, C2DExtentsI* outDims) {
     if (IsHudScalingActive() && outDims) {
         outDims->X = tl_virtualW;
@@ -370,6 +448,38 @@ static char __fastcall hk_SubtitleDrawPrepare(void* _this, void* edx, const void
 static char __fastcall hk_ReceivedItemsDraw(void* _this, void* edx, const void* info) {
     HudScopeGuard scope;
     return o_ReceivedItemsDraw(_this, edx, info);
+}
+
+static void __fastcall hk_HeroReceiveItems_PrepareToShowItems(void* _this, void* edx, const void* pos) {
+    auto* base = reinterpret_cast<uint8_t*>(_this);
+    void* listHead = *reinterpret_cast<void* const*>(base + 0x0C);
+    const bool hasItems = (listHead != nullptr && *reinterpret_cast<void* const*>(listHead) != listHead);
+    const bool wasDisplaying = (*(base + 0x26) != 0);
+
+    o_HeroReceiveItemsPrepareToShow(_this, edx, pos);
+
+    // PrepareToShowItems writes real screen coordinates via ConvertWorldPosToScreenPos /
+    // GetAVisibleTelevisionScreenArea; convert to virtual HUD coordinates so GlobalUpdate
+    // and 2DStaticMesh/2DAnimMesh::Update don't double-scale the preview ClipBox.
+    if (hasItems && !wasDisplaying) {
+        RefreshHudTransformFromDisplayManager();
+        if (tl_hudScaleX > 0.0f && tl_hudScaleY > 0.0f) {
+            const float invX = 1.0f / tl_hudScaleX;
+            const float invY = 1.0f / tl_hudScaleY;
+            for (size_t offset : { size_t(0x3C), size_t(0x4C), size_t(0x5C) }) {
+                auto* box = reinterpret_cast<C2DBoxF*>(base + offset);
+                box->TLX *= invX;
+                box->TLY *= invY;
+                box->BRX *= invX;
+                box->BRY *= invY;
+            }
+        }
+    }
+}
+
+static char __fastcall hk_HeroReceiveItems_GlobalUpdate(void* _this, void* edx, bool paused) {
+    HudScopeGuard scope;
+    return o_HeroReceiveItemsGlobalUpdate(_this, edx, paused);
 }
 
 static int __fastcall hk_BettingHUDDraw(void* _this, void* edx, const void* info) {
@@ -472,11 +582,75 @@ static int __fastcall hk_2DAnimMeshUpdate(void* _this, void* edx, const void* sr
 }
 
 static int __fastcall hk_Set2DPosition(void* _this, void* edx, const C2DVector* pos, int layer) {
-    if (IsHudScalingActive() && pos) {
-        C2DVector scaled = { pos->X * tl_hudScaleX, pos->Y * tl_hudScaleY };
-        return o_Set2DPosition(_this, edx, &scaled, layer);
+    if (tl_uiParticleScopeDepth > 0) {
+        SetParticleEmitterScaleMode(_this, ParticleScaleMode::Menu);
+        return o_Set2DPosition(_this, edx, pos, layer);
+    }
+    if (IsHudScalingActive()) {
+        SetParticleEmitterScaleMode(_this, ParticleScaleMode::Hud);
+        if (pos) {
+            C2DVector scaled = { pos->X * tl_hudScaleX, pos->Y * tl_hudScaleY };
+            return o_Set2DPosition(_this, edx, &scaled, layer);
+        }
     }
     return o_Set2DPosition(_this, edx, pos, layer);
+}
+
+static int __fastcall hk_UIParticleEffectInitialise(void* _this, void* edx) {
+    UIParticleScopeGuard scope;
+    return o_UIParticleEffectInitialise(_this, edx);
+}
+
+static int __fastcall hk_UIParticleEffectChangeState(void* _this, void* edx, uint32_t state) {
+    UIParticleScopeGuard scope;
+    return o_UIParticleEffectChangeState(_this, edx, state);
+}
+
+static int __fastcall hk_UIParticleEffectDraw(void* _this, void* edx, int a2, int a3, int a4, int a5, int a6) {
+    UIParticleScopeGuard scope;
+    return o_UIParticleEffectDraw(_this, edx, a2, a3, a4, a5, a6);
+}
+
+static void __fastcall hk_ParticleEmitterDtor(void* _this, void* edx) {
+    RemoveParticleEmitterScaleMode(_this);
+    o_ParticleEmitterDtor(_this, edx);
+}
+
+static char __fastcall hk_ParticleEmitterPreparePrimitives(void* _this, void* edx, float interpolate, const void* info) {
+    const float prevScale = tl_pending2DParticleScale;
+    float scale = prevScale;
+    switch (GetParticleEmitterScaleMode(_this)) {
+        case ParticleScaleMode::Menu:
+            scale = ComputeMenuUIScale();
+            break;
+        case ParticleScaleMode::Hud:
+            RefreshHudTransformFromDisplayManager();
+            scale = tl_hudScaleY;
+            break;
+        case ParticleScaleMode::None:
+        default:
+            // Preserve parent scale if PreparePrimitives recurses into a child emitter.
+            scale = prevScale;
+            break;
+    }
+
+    tl_pending2DParticleScale = scale;
+    char ret = o_ParticleEmitterPreparePrimitives(_this, edx, interpolate, info);
+    tl_pending2DParticleScale = prevScale;
+    return ret;
+}
+
+static int __fastcall hk_2DParticleGroupUpdate(void* _this, void* edx, const void* src, uint32_t flags) {
+    int ret = o_2DParticleGroupUpdate(_this, edx, src, flags);
+    if (tl_pending2DParticleScale != 1.0f && _this) {
+        // CEngineInternalPrimitive2DParticleGroup::Update copies 0x38 bytes starting at +176 (0xB0):
+        // 12 floats for InverseTransform (48 bytes) followed by Pos.X/Pos.Y (and Pos.Z at +232).
+        float* invTransform = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(_this) + 176);
+        for (int i = 0; i < 12; ++i) {
+            invTransform[i] *= tl_pending2DParticleScale;
+        }
+    }
+    return ret;
 }
 
 static void __fastcall hk_SetVWindow(void* _this, void* edx, const C2DBoxF* twindow) {
@@ -532,6 +706,9 @@ static void __fastcall hk_Add2DTri(void* _this, void* edx, const CTVertexRHWColS
     o_Add2DTri(_this, edx, v1, v2, v3, flags, texture);
 }
 
+// ============================================================================
+// Hook Registration
+// ============================================================================
 template <typename T>
 static void HookAddr(uintptr_t idaAddr, void* detour, T** original) {
     LPVOID target = reinterpret_cast<LPVOID>(Rebase(idaAddr));
@@ -559,6 +736,8 @@ static DWORD WINAPI InitThread(LPVOID lpParam) {
     HookAddr(Retail::ADDR_CPLAYERGUI_DRAWPREPARE,        &hk_PlayerGuiDrawPrepare,      &o_PlayerGuiDrawPrepare);
     HookAddr(Retail::ADDR_CSUBTITLERENDERER_DRAWPREPARE, &hk_SubtitleDrawPrepare,       &o_SubtitleDrawPrepare);
     HookAddr(Retail::ADDR_CDRAWRECEIVEDITEMS_DRAW,       &hk_ReceivedItemsDraw,         &o_ReceivedItemsDraw);
+    HookAddr(Retail::ADDR_CTCHERORECEIVEITEMS_PREPARE,   &hk_HeroReceiveItems_PrepareToShowItems, &o_HeroReceiveItemsPrepareToShow);
+    HookAddr(Retail::ADDR_CTCHERORECEIVEITEMS_GLOBALUPD, &hk_HeroReceiveItems_GlobalUpdate,       &o_HeroReceiveItemsGlobalUpdate);
     HookAddr(Retail::ADDR_CDRAWBETTINGHUD_DRAW,          &hk_BettingHUDDraw,            &o_BettingHUDDraw);
     HookAddr(Retail::ADDR_CDRAW2DTEXT_DRAW,              &hk_Draw2DTextFlush,           &o_Draw2DTextFlush);
     HookAddr(Retail::ADDR_CDRAWSCREENFADE_DRAW,          &hk_ScreenFadeDraw,            &o_ScreenFadeDraw);
@@ -567,13 +746,19 @@ static DWORD WINAPI InitThread(LPVOID lpParam) {
     HookAddr(Retail::ADDR_TAVERN_DRAWTEXTLABEL,          &hk_TavernDrawTextLabel,       &o_TavernDrawTextLabel);
     HookAddr(Retail::ADDR_TAVERN_DRAWINFOBOX,            &hk_TavernDrawInfoBox,         &o_TavernDrawInfoBox);
 
-    // CIEngine 2D primitive Update hooks
-    HookAddr(Retail::ADDR_PRIM_2DSPRITE_UPDATE,          &hk_2DSpriteUpdate,            &o_2DSpriteUpdate);
-    HookAddr(Retail::ADDR_PRIM_2DCLOCKSPRITE_UPDATE,     &hk_2DClockSpriteUpdate,       &o_2DClockSpriteUpdate);
-    HookAddr(Retail::ADDR_PRIM_2DTEXT_UPDATE,            &hk_2DTextUpdate,              &o_2DTextUpdate);
-    HookAddr(Retail::ADDR_PRIM_2DSTATICMESH_UPDATE,      &hk_2DStaticMeshUpdate,        &o_2DStaticMeshUpdate);
-    HookAddr(Retail::ADDR_PRIM_2DANIMMESH_UPDATE,        &hk_2DAnimMeshUpdate,          &o_2DAnimMeshUpdate);
-    HookAddr(Retail::ADDR_CPARTICLEEMITTER_SET2DPOS,     &hk_Set2DPosition,             &o_Set2DPosition);
+    // CIEngine 2D primitive Update & 2D Particle hooks
+    HookAddr(Retail::ADDR_PRIM_2DSPRITE_UPDATE,          &hk_2DSpriteUpdate,                   &o_2DSpriteUpdate);
+    HookAddr(Retail::ADDR_PRIM_2DCLOCKSPRITE_UPDATE,     &hk_2DClockSpriteUpdate,              &o_2DClockSpriteUpdate);
+    HookAddr(Retail::ADDR_PRIM_2DTEXT_UPDATE,            &hk_2DTextUpdate,                     &o_2DTextUpdate);
+    HookAddr(Retail::ADDR_PRIM_2DSTATICMESH_UPDATE,      &hk_2DStaticMeshUpdate,               &o_2DStaticMeshUpdate);
+    HookAddr(Retail::ADDR_PRIM_2DANIMMESH_UPDATE,        &hk_2DAnimMeshUpdate,                 &o_2DAnimMeshUpdate);
+    HookAddr(Retail::ADDR_PRIM_2DPARTICLEGROUP_UPDATE,   &hk_2DParticleGroupUpdate,            &o_2DParticleGroupUpdate);
+    HookAddr(Retail::ADDR_CPARTICLEEMITTER_SET2DPOS,     &hk_Set2DPosition,                    &o_Set2DPosition);
+    HookAddr(Retail::ADDR_CPARTICLEEMITTER_PREPPARAMS,   &hk_ParticleEmitterPreparePrimitives, &o_ParticleEmitterPreparePrimitives);
+    HookAddr(Retail::ADDR_CPARTICLEEMITTER_DTOR,         &hk_ParticleEmitterDtor,              &o_ParticleEmitterDtor);
+    HookAddr(Retail::ADDR_UIPARTICLEEFFECT_INITIALISE,   &hk_UIParticleEffectInitialise,       &o_UIParticleEffectInitialise);
+    HookAddr(Retail::ADDR_UIPARTICLEEFFECT_CHANGESTATE,  &hk_UIParticleEffectChangeState,      &o_UIParticleEffectChangeState);
+    HookAddr(Retail::ADDR_UIPARTICLEEFFECT_DRAW,         &hk_UIParticleEffectDraw,             &o_UIParticleEffectDraw);
 
     // Viewport exclusion & CRenderManager2D QuickDraw scaling
     HookAddr(Retail::ADDR_CRENDERMANAGERCORE_SETVWINDOW, &hk_SetVWindow,                &o_SetVWindow);
