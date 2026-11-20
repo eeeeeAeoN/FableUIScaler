@@ -21,6 +21,8 @@ namespace Retail {
 
     constexpr uintptr_t ADDR_CPLAYERGUI_DRAWPREPARE        = 0x00439070;
     constexpr uintptr_t ADDR_CSUBTITLERENDERER_DRAWPREPARE = 0x00490494;
+    constexpr uintptr_t ADDR_CSUBTITLE_PROCESS_GRAPHICS    = 0x00492381; // CSubtitleRenderer::ProcessEmbeddedGraphicTags
+    constexpr uintptr_t ADDR_CSUBTITLE_PROCESS_HIGHLIGHTS  = 0x00491AD2; // CSubtitleRenderer::ProcessEmbeddedHighlightTags
     constexpr uintptr_t ADDR_CDRAWRECEIVEDITEMS_DRAW       = 0x0064E978;
     constexpr uintptr_t ADDR_CTCHERORECEIVEITEMS_PREPARE   = 0x007CA670;
     constexpr uintptr_t ADDR_CTCHERORECEIVEITEMS_GLOBALUPD = 0x007CACB0;
@@ -56,6 +58,7 @@ namespace Retail {
     constexpr uintptr_t ADDR_CPROGRESSDISPLAY_DRAWRETAIL   = 0x00498490;
     constexpr uintptr_t ADDR_CRENDERMANAGER2D_ADDTEXT      = 0x009DB700;
     constexpr uintptr_t ADDR_CRENDERMANAGER2D_ADD2DTRI     = 0x009DC030;
+    constexpr uintptr_t ADDR_CENGINE_WORLDTOSCREEN         = 0x00B242D0; // CEngine::ConvertWorldPosToScreenPos
 }
 
 struct C2DVector {
@@ -193,6 +196,7 @@ using IsHovered_t        = bool(__fastcall*)(void* _this, void* edx, const C2DBo
 
 using GetRenderTargetDimensions_t = C2DExtentsI* (__fastcall*)(void* _this, void* edx, C2DExtentsI* outDims);
 
+using VoidThis_t         = void(__fastcall*)(void* _this, void* edx);
 using VoidPrep_t         = void* (__fastcall*)(void* _this, void* edx, const void* info);
 using CharPrep_t         = char(__fastcall*)(void* _this, void* edx, const void* info);
 using IntPrep_t          = int(__fastcall*)(void* _this, void* edx, const void* info);
@@ -220,6 +224,7 @@ using RegionGlobalDraw_t  = char(__fastcall*)(void* _this, void* edx, int interp
 using DrawRetailDisplay_t = void(__fastcall*)(void* _this, void* edx, const void* textToDisplay, float percentComplete, bool forcePercentage);
 using AddText_t           = void(__fastcall*)(void* _this, void* edx, const void* pos, float scale, const void* wideStr, const void* font, const void* colour, uint32_t flags);
 using Add2DTri_t          = void(__fastcall*)(void* _this, void* edx, const CTVertexRHWColSpecTex1* v1, const CTVertexRHWColSpecTex1* v2, const CTVertexRHWColSpecTex1* v3, uint32_t flags, void* texture);
+using WorldToScreen_t     = bool(__fastcall*)(void* _this, void* edx, const void* wpos, C2DVector* mpos);
 
 static GetUIScale_t                o_GetUIScale = nullptr;
 static IsHovered_t                 o_IsHovered = nullptr;
@@ -227,6 +232,8 @@ static GetRenderTargetDimensions_t o_GetRTDims = nullptr;
 
 static VoidPrep_t                  o_PlayerGuiDrawPrepare = nullptr;
 static CharPrep_t                  o_SubtitleDrawPrepare = nullptr;
+static VoidThis_t                  o_SubtitleProcessEmbeddedGraphics = nullptr;
+static VoidThis_t                  o_SubtitleProcessEmbeddedHighlights = nullptr;
 static CharPrep_t                  o_ReceivedItemsDraw = nullptr;
 static ReceiveItemsPrepare_t       o_HeroReceiveItemsPrepareToShow = nullptr;
 static ReceiveItemsUpdate_t        o_HeroReceiveItemsGlobalUpdate = nullptr;
@@ -258,6 +265,7 @@ static RegionGlobalDraw_t          o_RegionGlobalDraw = nullptr;
 static DrawRetailDisplay_t         o_DrawRetailDisplay = nullptr;
 static AddText_t                   o_AddText = nullptr;
 static Add2DTri_t                  o_Add2DTri = nullptr;
+static WorldToScreen_t             o_ConvertWorldPosToScreenPos = nullptr;
 
 // ============================================================================
 // Thread-local HUD Virtual Canvas State
@@ -443,6 +451,16 @@ static void* __fastcall hk_PlayerGuiDrawPrepare(void* _this, void* edx, const vo
 static char __fastcall hk_SubtitleDrawPrepare(void* _this, void* edx, const void* info) {
     HudScopeGuard scope;
     return o_SubtitleDrawPrepare(_this, edx, info);
+}
+
+static void __fastcall hk_SubtitleProcessEmbeddedGraphics(void* _this, void* edx) {
+    HudScopeGuard scope;
+    o_SubtitleProcessEmbeddedGraphics(_this, edx);
+}
+
+static void __fastcall hk_SubtitleProcessEmbeddedHighlights(void* _this, void* edx) {
+    HudScopeGuard scope;
+    o_SubtitleProcessEmbeddedHighlights(_this, edx);
 }
 
 static char __fastcall hk_ReceivedItemsDraw(void* _this, void* edx, const void* info) {
@@ -706,6 +724,15 @@ static void __fastcall hk_Add2DTri(void* _this, void* edx, const CTVertexRHWColS
     o_Add2DTri(_this, edx, v1, v2, v3, flags, texture);
 }
 
+static bool __fastcall hk_ConvertWorldPosToScreenPos(void* _this, void* edx, const void* wpos, C2DVector* mpos) {
+    bool ok = o_ConvertWorldPosToScreenPos(_this, edx, wpos, mpos);
+    if (ok && mpos && IsHudScalingActive() && tl_hudScaleX > 0.0f && tl_hudScaleY > 0.0f) {
+        mpos->X /= tl_hudScaleX;
+        mpos->Y /= tl_hudScaleY;
+    }
+    return ok;
+}
+
 // ============================================================================
 // Hook Registration
 // ============================================================================
@@ -735,6 +762,8 @@ static DWORD WINAPI InitThread(LPVOID lpParam) {
     HookAddr(Retail::ADDR_CDISPLAYMANAGER_GETRTDIMS,     &hk_GetRenderTargetDimensions, &o_GetRTDims);
     HookAddr(Retail::ADDR_CPLAYERGUI_DRAWPREPARE,        &hk_PlayerGuiDrawPrepare,      &o_PlayerGuiDrawPrepare);
     HookAddr(Retail::ADDR_CSUBTITLERENDERER_DRAWPREPARE, &hk_SubtitleDrawPrepare,       &o_SubtitleDrawPrepare);
+    HookAddr(Retail::ADDR_CSUBTITLE_PROCESS_GRAPHICS,      &hk_SubtitleProcessEmbeddedGraphics,   &o_SubtitleProcessEmbeddedGraphics);
+    HookAddr(Retail::ADDR_CSUBTITLE_PROCESS_HIGHLIGHTS,    &hk_SubtitleProcessEmbeddedHighlights, &o_SubtitleProcessEmbeddedHighlights);
     HookAddr(Retail::ADDR_CDRAWRECEIVEDITEMS_DRAW,       &hk_ReceivedItemsDraw,         &o_ReceivedItemsDraw);
     HookAddr(Retail::ADDR_CTCHERORECEIVEITEMS_PREPARE,   &hk_HeroReceiveItems_PrepareToShowItems, &o_HeroReceiveItemsPrepareToShow);
     HookAddr(Retail::ADDR_CTCHERORECEIVEITEMS_GLOBALUPD, &hk_HeroReceiveItems_GlobalUpdate,       &o_HeroReceiveItemsGlobalUpdate);
@@ -766,6 +795,7 @@ static DWORD WINAPI InitThread(LPVOID lpParam) {
     HookAddr(Retail::ADDR_CPROGRESSDISPLAY_DRAWRETAIL,   &hk_DrawRetailDisplay,         &o_DrawRetailDisplay);
     HookAddr(Retail::ADDR_CRENDERMANAGER2D_ADDTEXT,      &hk_AddText,                   &o_AddText);
     HookAddr(Retail::ADDR_CRENDERMANAGER2D_ADD2DTRI,     &hk_Add2DTri,                  &o_Add2DTri);
+    HookAddr(Retail::ADDR_CENGINE_WORLDTOSCREEN,           &hk_ConvertWorldPosToScreenPos,        &o_ConvertWorldPosToScreenPos);
 
     return 0;
 }
